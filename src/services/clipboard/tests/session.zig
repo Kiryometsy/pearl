@@ -423,33 +423,69 @@ test "session reports write failure and post-publication uncertainty without dur
     }
 }
 
-test "session failed and uncertain Clear barriers never produce a durable receipt" {
-    for ([_]store.Phase{ .remove, .directory_sync }) |phase| {
-        var fixture = try Fixture.init();
-        defer fixture.deinit();
-        {
-            var disk = try store.Store.open(t.allocator, fixture.path);
-            defer disk.close();
-            _ = try disk.read();
-            try disk.write(.{ .records = &.{.{ .bytes = "saved before Clear", .last_copy = 100, .sequence = 1 }}, .floor = 100 });
+test "session failed and uncertain removals return admission and query receipts while unlocked" {
+    for ([_]session.worker.Operation{ .delete, .clear }) |operation| {
+        for ([_]store.Phase{ .remove, .directory_sync }) |phase| {
+            var fixture = try Fixture.init();
+            defer fixture.deinit();
+            {
+                var disk = try store.Store.open(t.allocator, fixture.path);
+                defer disk.close();
+                _ = try disk.read();
+                try disk.write(.{ .records = &.{
+                    .{ .bytes = "synthetic to remove", .last_copy = 100, .sequence = 2 },
+                    .{ .bytes = "synthetic retained text", .last_copy = 100, .sequence = 1 },
+                }, .floor = 100 });
+            }
+            var hook: Hook = .{ .fail = if (operation == .delete and phase == .remove) .publish else phase };
+            var s = try fixture.startHooks(at(100), hook.hooks());
+            defer close(&s);
+            if (operation == .delete) try s.delete(s.entries()[0].id, at(100)) else try s.clear();
+            _ = s.worker.?.waitIdle();
+            const receipt = try s.removal();
+            try t.expectEqual(operation, receipt.operation);
+            try t.expectEqual(if (phase == .remove) session.worker.ReceiptState.failed else session.worker.ReceiptState.uncertain, receipt.state);
+            try t.expectEqual(if (phase == .remove) session.presentation.Feedback.removal_failed else session.presentation.Feedback.removal_uncertain, s.feedback());
+            const hidden = try s.pageStatus(t.allocator, true, false, "Persistence unavailable", .{});
+            defer t.allocator.free(hidden);
+            const parsed_status = try std.json.parseFromSlice(std.json.Value, t.allocator, hidden, .{});
+            defer parsed_status.deinit();
+            try t.expectEqual(std.json.Value.null, parsed_status.value.object.get("removal").?);
+            try t.expectEqualStrings(if (phase == .remove) "failed" else "uncertain", parsed_status.value.object.get("persistence").?.string);
+            try t.expectError(receipt.failure.?, s.poll(at(101)));
+            // Exercise the initial response after the worker has already failed.
+            const admitted = try s.removalStatus(t.allocator);
+            defer t.allocator.free(admitted);
+            const response = try std.json.parseFromSlice(std.json.Value, t.allocator, admitted, .{});
+            defer response.deinit();
+            try t.expect(response.value.object.get("queued").?.bool);
+            try t.expect(!response.value.object.get("durable").?.bool);
+            try t.expectEqualStrings(@tagName(receipt.state), response.value.object.get("state").?.string);
+            try t.expectEqual(receipt.token, @as(u64, @intCast(response.value.object.get("operation").?.integer)));
+            try t.expectEqualStrings(&s.instance, response.value.object.get("instance").?.string);
+            const page: session.presentation.Page = .{ .operation = receipt.token, .instance = &s.instance };
+            // Device availability is also false once the service fences storage.
+            const queried = try s.pageStatus(t.allocator, false, false, "Persistence unavailable", page);
+            defer t.allocator.free(queried);
+            const result = try std.json.parseFromSlice(std.json.Value, t.allocator, queried, .{});
+            defer result.deinit();
+            try t.expectEqualStrings(if (phase == .remove) "failed" else "uncertain", result.value.object.get("removal").?.object.get("state").?.string);
+            try t.expectEqual(@as(usize, 0), result.value.object.get("entries").?.array.items.len);
+            for ([_][]const u8{ "total", "offset", "limit", "returned", "next_offset", "revision", "instance" }) |field| try t.expectEqual(std.json.Value.null, result.value.object.get(field).?);
+            try t.expectError(error.InstanceRequired, s.pageStatus(t.allocator, false, false, "", .{ .operation = receipt.token }));
+            try t.expectError(error.StaleInstance, s.pageStatus(t.allocator, false, false, "", .{ .operation = receipt.token, .instance = "00000000000000000000000000000000" }));
+            try t.expectError(error.StaleOperation, s.pageStatus(t.allocator, false, false, "", .{ .operation = receipt.token + 1, .instance = &s.instance }));
+            try t.expectError(error.StaleOperation, s.pageStatus(t.allocator, false, false, "", .{ .operation = 0, .instance = &s.instance }));
+            s.setLocked(true);
+            try t.expectError(error.Locked, s.pageStatus(t.allocator, false, false, "", page));
+            try t.expectError(error.Locked, s.removalStatus(t.allocator));
+            s.setLocked(false);
+            s.beginShutdown();
+            try t.expectError(error.Locked, s.pageStatus(t.allocator, false, false, "", page));
+            try t.expectError(error.Locked, s.removalStatus(t.allocator));
+            try t.expectEqual(@as(u64, 0), s.worker.?.status().durable_revision);
+            try t.expect(!s.accessible());
         }
-        var hook: Hook = .{ .fail = phase };
-        var s = try fixture.startHooks(at(100), hook.hooks());
-        defer close(&s);
-        try s.clear();
-        _ = s.worker.?.waitIdle();
-        const receipt = try s.removal();
-        try t.expectEqual(if (phase == .remove) session.worker.ReceiptState.failed else session.worker.ReceiptState.uncertain, receipt.state);
-        try t.expectEqual(if (phase == .remove) session.presentation.Feedback.removal_failed else session.presentation.Feedback.removal_uncertain, s.feedback());
-        const hidden = try s.pageStatus(t.allocator, true, false, "Persistence unavailable", .{});
-        defer t.allocator.free(hidden);
-        const parsed_status = try std.json.parseFromSlice(std.json.Value, t.allocator, hidden, .{});
-        defer parsed_status.deinit();
-        try t.expectEqual(std.json.Value.null, parsed_status.value.object.get("removal").?);
-        try t.expectEqualStrings(if (phase == .remove) "failed" else "uncertain", parsed_status.value.object.get("persistence").?.string);
-        try t.expectError(error.Locked, s.pageStatus(t.allocator, true, false, "Persistence unavailable", .{ .operation = receipt.token, .instance = &s.instance }));
-        try t.expectEqual(@as(u64, 0), s.worker.?.status().durable_revision);
-        try t.expect(!s.accessible());
     }
 }
 

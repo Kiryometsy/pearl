@@ -500,6 +500,7 @@ pub const Clipboard = struct {
     }
     pub fn pageStatus(self: *Clipboard, alloc: std.mem.Allocator, page: presentation.Page) ![]const u8 {
         self.refresh();
+        if (page.operation != null and (self.locked or self.stopping or self.ambiguous)) return error.Locked;
         if (self.session) |*session| return session.pageStatus(alloc, self.accessible(), self.read != null, self.baseline(), page);
         return presentation.status(alloc, .{ .accessible = false, .health = .unavailable, .instance = "", .message = self.baseline() }, page);
     }
@@ -509,9 +510,9 @@ pub const Clipboard = struct {
         try self.session.?.checkInstance(instance);
     }
     pub fn removalStatus(self: *Clipboard, alloc: std.mem.Allocator) ![]const u8 {
-        if (!self.accessible()) return error.Locked;
-        const result = try self.session.?.removal();
-        return std.json.Stringify.valueAlloc(alloc, .{ .queued = true, .operation = result.token, .instance = self.session.?.instance[0..], .state = result.state, .durable = result.state == .durable }, .{});
+        if (self.locked or self.stopping or self.ambiguous) return error.Locked;
+        const session = if (self.session) |*value| value else return error.Unavailable;
+        return session.removalStatus(alloc);
     }
 };
 pub fn encode(image: *pixbuf.Pixbuf) ![]u8 {

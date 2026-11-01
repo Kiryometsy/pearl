@@ -112,7 +112,9 @@ the plaintext codec, storage, one background writer, coordination and status
 presentation. Filesystem reads, writes and synchronization run on the worker.
 Pending ordinary saves may be superseded, but removals stay ordered. A Delete
 or Clear is confirmed only when its worker receipt is `durable`, not when
-the request is queued.
+the request is queued. Removals also delete validated temporary snapshots left
+by interrupted saves before confirming durability, including when text remains
+in the history file.
 
 Unsafe, corrupt or unsupported files are not overwritten automatically.
 Storage or clock failures currently disable Pearl's history collection and
@@ -247,7 +249,10 @@ reject stale traversals. A full response, including framing and newline, fits
 return admission separately from durable completion. Check the returned token
 with `clipboard status --operation ... --instance ...`: `pending`, `busy`,
 `failed` and `uncertain` do not mean `durable`. Optional `--instance` guards
-also apply to Delete/Clear.
+also apply to Delete/Clear. Explicit operation queries remain available after
+storage failure while the privacy gate is open; history stays hidden. Locking,
+suspension and shutdown still deny receipt access. An accepted removal returns
+its token even if the worker fails before the initial response is produced.
 
 Capture requests acknowledge queueing, not completion. Wait for `pending: false`
 and an increased `generation`; inspect the message if it did not increase.

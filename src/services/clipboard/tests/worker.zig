@@ -468,6 +468,58 @@ test "worker real store Clear remains absent after shutdown and reopening" {
     try t.expect((try store.read()) == null);
 }
 
+test "worker nonempty removals clean orphan plaintext and never falsely confirm cleanup failures" {
+    const Variant = enum { clean, unsafe_temp, publish_failure, sync_failure };
+    for ([_]module.Operation{ .delete, .expiry, .eviction }) |operation| {
+        for ([_]Variant{ .clean, .unsafe_temp, .publish_failure, .sync_failure }) |variant| {
+            var fixture = try Fixture.init();
+            defer fixture.deinit();
+            const orphan = "history.tmp.0123456789abcdef0123456789abcdef";
+            {
+                var store = try storage.Store.open(t.allocator, fixture.path);
+                defer store.close();
+                _ = try store.read();
+                const old = try snapshot("synthetic deleted plaintext");
+                defer old.deinit();
+                try store.write(old.view());
+                const fd = std.c.openat(store.directoryFd(), orphan, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true, .CLOEXEC = true }, @as(c_uint, 0o600));
+                try t.expect(fd >= 0);
+                defer _ = std.c.close(fd);
+                const text = "synthetic deleted plaintext";
+                try t.expectEqual(@as(isize, text.len), std.c.write(fd, text.ptr, text.len));
+                try t.expectEqual(@as(c_int, 0), std.c.fchmod(fd, if (variant == .unsafe_temp) 0o644 else 0o600));
+            }
+            var fault: RealFault = .{ .phase = if (variant == .publish_failure) .publish else .directory_sync };
+            const hooks: storage.Hooks = if (variant == .publish_failure or variant == .sync_failure) fault.hooks() else .{};
+            const worker = try fixture.start(hooks);
+            defer worker.deinit();
+            const token = try worker.requestRemoval(operation, 1, try snapshot("synthetic remaining text"));
+            const status = worker.waitIdle();
+            const receipt = try worker.receipt(token);
+            const expected_state: module.ReceiptState = if (variant == .clean) .durable else if (variant == .publish_failure) .failed else .uncertain;
+            try t.expectEqual(expected_state, receipt.state);
+            try t.expectEqual(@as(u64, if (variant == .clean) 1 else 0), status.durable_revision);
+            if (variant == .clean) {
+                try t.expectEqual(@as(?storage.Error, null), receipt.failure);
+            } else {
+                try t.expectEqual(if (variant == .publish_failure) error.PublishFailed else error.Uncertain, receipt.failure.?);
+                try t.expectEqual(receipt.failure, status.failure);
+            }
+            worker.beginShutdown();
+            worker.join();
+            var disk = try storage.Store.open(t.allocator, fixture.path);
+            defer disk.close();
+            var loaded = (try disk.read()).?;
+            defer loaded.deinit();
+            try t.expectEqualStrings(if (variant == .publish_failure) "synthetic deleted plaintext" else "synthetic remaining text", loaded.snapshot().records[0].bytes);
+            var st: std.os.linux.Statx = undefined;
+            const result = std.os.linux.statx(disk.directoryFd(), orphan, std.os.linux.AT.SYMLINK_NOFOLLOW, .{ .TYPE = true }, &st);
+            try t.expectEqual(if (variant == .unsafe_temp or variant == .publish_failure) std.posix.E.SUCCESS else .NOENT, std.os.linux.errno(result));
+            if (variant == .unsafe_temp) try t.expectEqual(@as(u16, 0o644), st.mode & 0o7777);
+        }
+    }
+}
+
 test "worker concurrent real writer reports Busy asynchronously" {
     var fixture = try Fixture.init();
     defer fixture.deinit();

@@ -201,6 +201,43 @@ test "clipboard suspended status suppresses metadata and cannot distinguish empt
     }
 }
 
+test "clipboard explicit failure receipt stays visible without exposing unavailable history" {
+    var model = history.History.init(t.allocator);
+    defer model.deinit();
+    try fill(&model, 3);
+    for ([_]worker.ReceiptState{ .failed, .uncertain }) |state| {
+        var c = context(&model);
+        c.accessible = false;
+        c.receipts_accessible = true;
+        c.health = if (state == .failed) .failed else .uncertain;
+        c.incoming_pending = true;
+        c.persistence_pending = true;
+        c.removal = .{ .token = 987, .revision = 12, .operation = .delete, .state = state };
+        const page: view.Page = .{ .operation = 987, .instance = instance };
+        const bytes = try view.status(t.allocator, c, page);
+        defer t.allocator.free(bytes);
+        const p = try parsed(bytes);
+        defer p.deinit();
+        const receipt = value(p.value, "removal");
+        try t.expectEqual(@as(i64, 987), value(receipt, "token").integer);
+        try t.expectEqualStrings(@tagName(state), value(receipt, "state").string);
+        for ([_][]const u8{ "total", "offset", "limit", "returned", "next_offset", "revision", "instance" }) |name| try t.expectEqual(std.json.Value.null, value(p.value, name));
+        try t.expectEqual(@as(usize, 0), value(p.value, "entries").array.items.len);
+        try t.expect(!value(p.value, "available").bool and !value(p.value, "has_more").bool and !value(p.value, "pending").bool and !value(p.value, "persistence_pending").bool);
+        try t.expect(std.mem.indexOf(u8, bytes, "synthetic") == null);
+        try t.expectError(error.InstanceRequired, view.status(t.allocator, c, .{ .operation = 987 }));
+        try t.expectError(error.StaleInstance, view.status(t.allocator, c, .{ .operation = 987, .instance = "old instance" }));
+        const ordinary = try view.status(t.allocator, c, .{});
+        defer t.allocator.free(ordinary);
+        const hidden = try parsed(ordinary);
+        defer hidden.deinit();
+        try t.expectEqual(std.json.Value.null, value(hidden.value, "removal"));
+        c.receipts_accessible = false;
+        c.health = .paused;
+        try t.expectError(error.Locked, view.status(t.allocator, c, page));
+    }
+}
+
 test "clipboard pending persistence stays distinct from incoming transfer pending" {
     var model = history.History.init(t.allocator);
     defer model.deinit();

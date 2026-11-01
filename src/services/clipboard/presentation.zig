@@ -20,6 +20,7 @@ pub const Page = struct {
 };
 pub const Context = struct {
     accessible: bool,
+    receipts_accessible: bool = false,
     persistent: bool = false,
     incoming_pending: bool = false,
     persistence_pending: bool = false,
@@ -34,10 +35,15 @@ pub const Context = struct {
 
 pub fn status(allocator: std.mem.Allocator, context: Context, page: Page) ![]u8 {
     try page.validate();
+    if (page.operation != null) {
+        if (!context.receipts_accessible) return error.Locked;
+        const instance = page.instance orelse return error.InstanceRequired;
+        if (!std.mem.eql(u8, instance, context.instance)) return error.StaleInstance;
+    }
     if (context.accessible) {
         if (page.instance) |instance| if (!std.mem.eql(u8, instance, context.instance)) return error.StaleInstance;
         if (page.revision) |revision| if (revision != context.revision) return error.StaleRevision;
-    } else if (page.operation != null) return error.Locked;
+    }
     const Item = struct { id: u64, kind: history.Kind, bytes: usize, preview: []const u8, last_copy: i64 };
     var items: [page_limit]Item = undefined;
     var previews: [page_limit]?[:0]u8 = @splat(null);
@@ -76,7 +82,7 @@ pub fn status(allocator: std.mem.Allocator, context: Context, page: Page) ![]u8 
             .next_offset = if (more) @as(?usize, offset + count) else null,
             .revision = if (context.accessible) @as(?u64, context.revision) else null,
             .instance = if (context.accessible) @as(?[]const u8, context.instance) else null,
-            .removal = if (context.accessible) context.removal else null,
+            .removal = if (context.accessible or (page.operation != null and context.receipts_accessible)) context.removal else null,
             .entries = items[0..count],
         }, .{});
         if (frame.successLength(page.request_id, result) <= frame.max_frame) return result;

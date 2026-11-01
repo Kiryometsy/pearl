@@ -132,6 +132,7 @@ const FileBackend = struct {
     fn persist(context: *anyopaque, snapshot: codec.Snapshot, operation: Operation) storage.Error!void {
         const self: *FileBackend = @ptrCast(@alignCast(context));
         if (operation == .clear) return self.store.?.remove();
+        if (operation != .ordinary) return self.store.?.writeRemoval(snapshot);
         return self.store.?.write(snapshot);
     }
     fn close(context: *anyopaque) void {

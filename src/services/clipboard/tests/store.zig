@@ -241,6 +241,32 @@ test "store never restores an interrupted temporary snapshot and clear removes o
     try t.expect(std.os.linux.statx(store.directoryFd(), orphan, 0, .{ .TYPE = true }, &st) != 0);
 }
 
+test "store nonempty removal cleans orphan plaintext and preserves unrelated files" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    var store = try fixture.open();
+    defer store.close();
+    _ = try store.read();
+    try store.write(first);
+    const dir = store.directoryFd();
+    const another = "history.tmp.fedcba9876543210fedcba9876543210";
+    try writeLeaf(dir, orphan, "synthetic deleted plaintext", 0o600);
+    try writeLeaf(dir, another, "synthetic older plaintext", 0o600);
+    try writeLeaf(dir, "unrelated", "keep unrelated", 0o600);
+    try writeLeaf(dir, "history.tmp.invalid", "keep invalid temp name", 0o600);
+    try store.writeRemoval(second);
+    try expectLoaded(&store, second);
+    for ([_][:0]const u8{ orphan, another }) |name| {
+        var st: std.os.linux.Statx = undefined;
+        try t.expectEqual(std.posix.E.NOENT, std.os.linux.errno(std.os.linux.statx(dir, name, 0, .{ .TYPE = true }, &st)));
+    }
+    for ([_][:0]const u8{ "unrelated", "history.tmp.invalid" }, [_][]const u8{ "keep unrelated", "keep invalid temp name" }) |name, expected| {
+        const bytes = try readLeaf(dir, name);
+        defer t.allocator.free(bytes);
+        try t.expectEqualStrings(expected, bytes);
+    }
+}
+
 const Failure = struct {
     phase: storage.Phase,
     calls: usize = 0,

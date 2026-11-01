@@ -336,6 +336,15 @@ pub const Store = struct {
     }
 
     pub fn write(self: *Store, snapshot: codec.Snapshot) Error!void {
+        return self.writeSnapshot(snapshot, false);
+    }
+
+    /// Removal snapshots must also retire plaintext left by interrupted saves.
+    pub fn writeRemoval(self: *Store, snapshot: codec.Snapshot) Error!void {
+        return self.writeSnapshot(snapshot, true);
+    }
+
+    fn writeSnapshot(self: *Store, snapshot: codec.Snapshot, removal: bool) Error!void {
         switch (self.state) {
             .ready, .missing => {},
             .corrupt => return error.Corrupt,
@@ -345,13 +354,13 @@ pub const Store = struct {
         }
         // Invalid caller snapshots cannot delete/replace a valid saved file.
         _ = try codec.encodedSize(snapshot);
-        self.writeImpl(snapshot) catch |err| {
+        self.writeImpl(snapshot, removal) catch |err| {
             self.state = stateFor(err);
             return err;
         };
     }
 
-    fn writeImpl(self: *Store, snapshot: codec.Snapshot) Error!void {
+    fn writeImpl(self: *Store, snapshot: codec.Snapshot, removal: bool) Error!void {
         self.cleanup_failed = false;
         try self.guard();
         try self.checkExpected();
@@ -411,6 +420,13 @@ pub const Store = struct {
         }
         published = true;
         self.hooks.check(.after_publish) catch return error.Uncertain;
+        if (removal) {
+            // The replacement is already published: any cleanup failure leaves
+            // the overall removal uncertain, even if history.bin is now clean.
+            self.guard() catch return error.Uncertain;
+            var changed = false;
+            self.removeTemps(&changed) catch return error.Uncertain;
+        }
         self.hooks.check(.directory_sync) catch return error.Uncertain;
         sync(self.directoryFd()) catch return error.Uncertain;
         self.guard() catch return error.Uncertain;

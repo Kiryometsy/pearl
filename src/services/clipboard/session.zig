@@ -263,6 +263,13 @@ pub const Session = struct {
     pub fn removal(self: *Session) !worker.Receipt {
         return (self.worker orelse return error.Unavailable).receipt(self.last_token orelse return error.Stale);
     }
+    pub fn removalStatus(self: *Session, allocator: std.mem.Allocator) ![]const u8 {
+        if (self.locked or self.stopping) return error.Locked;
+        // Admission already succeeded. A fast worker failure must not hide its
+        // token or terminal outcome from the initial Delete/Clear response.
+        const result = try self.removal();
+        return std.json.Stringify.valueAlloc(allocator, .{ .queued = true, .operation = result.token, .instance = self.instance[0..], .state = result.state, .durable = result.state == .durable }, .{});
+    }
     pub fn lastRemoval(self: *const Session) ?worker.Receipt {
         return (self.worker orelse return null).receipt(self.last_token orelse return null) catch null;
     }
@@ -276,7 +283,7 @@ pub const Session = struct {
         const visible = native_available and self.accessible();
         var receipt = self.lastRemoval();
         if (page.operation) |token| {
-            if (!visible) return error.Locked;
+            if (self.locked or self.stopping) return error.Locked;
             if (page.instance == null) return error.InstanceRequired;
             try self.checkInstance(page.instance);
             receipt = (self.worker orelse return error.Unavailable).receipt(token) catch return error.StaleOperation;
@@ -285,6 +292,7 @@ pub const Session = struct {
         const failure: ?Error = self.failure orelse ws.failure;
         return presentation.status(allocator, .{
             .accessible = visible,
+            .receipts_accessible = !self.locked and !self.stopping,
             .persistent = self.ready and failure == null,
             .incoming_pending = incoming_pending,
             .persistence_pending = ws.desired_revision != ws.durable_revision,
