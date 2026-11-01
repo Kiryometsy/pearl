@@ -36,6 +36,12 @@ test {
     _ = @import("config/dms_import.zig");
     _ = @import("desktop/dock_policy.zig");
     _ = @import("services/clipboard_policy.zig");
+    _ = @import("services/clipboard_history_tests.zig");
+    _ = @import("services/clipboard_history_codec_tests.zig");
+    _ = @import("services/clipboard_history_store_tests.zig");
+    _ = @import("services/clipboard_history_worker_tests.zig");
+    _ = @import("services/clipboard_history_session_tests.zig");
+    _ = @import("clipboard_history_ui_tests.zig");
     _ = @import("lock/conversation.zig");
     _ = @import("services/idle_policy.zig");
     _ = @import("services/power_presentation.zig");
