@@ -1,7 +1,7 @@
 const std = @import("std");
 const t = std.testing;
-const model = @import("clipboard_history.zig");
-const policy = @import("clipboard_policy.zig");
+const model = @import("../history.zig");
+const policy = @import("../../clipboard_policy.zig");
 const History = model.History;
 
 // Synthetic canonical-boundary fixtures, not decoder inputs. The production

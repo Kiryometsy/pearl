@@ -1,10 +1,10 @@
 const std = @import("std");
 const t = std.testing;
-const session = @import("clipboard_history_session.zig");
-const codec = @import("clipboard_history_codec.zig");
-const store = @import("clipboard_history_store.zig");
-const model = @import("clipboard_history.zig");
-const clock = @import("clipboard_history_clock.zig");
+const session = @import("../session.zig");
+const codec = @import("../codec.zig");
+const store = @import("../store.zig");
+const model = @import("../history.zig");
+const clock = @import("../clock.zig");
 extern "c" fn mkdtemp([*:0]u8) ?[*:0]u8;
 
 fn at(seconds: i64) clock.Sample {
@@ -166,7 +166,7 @@ test "session PNG-only changes never write PNG and PNG eviction persists lost te
     s = try fixture.start(at(103));
     try t.expectEqual(@as(usize, 0), s.entries().len);
 }
-fn moduleReceiptDurable() @import("clipboard_history_worker.zig").ReceiptState {
+fn moduleReceiptDurable() @import("../worker.zig").ReceiptState {
     return .durable;
 }
 
@@ -295,7 +295,7 @@ test "session bounded legacy status includes complete frame overhead and redacts
 }
 
 test "session sensitive clipboard MIME hints remain excluded" {
-    const policy = @import("clipboard_policy.zig");
+    const policy = @import("../../clipboard_policy.zig");
     for ([_][]const u8{ "x-kde-passwordManagerHint", "application/x-keepassxc", "application/x-pearl-private" }) |mime| try t.expect(policy.sensitiveMime(mime));
     try t.expect(!policy.sensitiveMime("text/plain"));
 }

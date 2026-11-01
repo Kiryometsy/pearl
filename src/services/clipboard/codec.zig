@@ -1,8 +1,8 @@
 //! Streaming plaintext snapshot v1. SHA-256 detects corruption, not forgery.
 //! No runtime IDs, PNGs, filesystem operations or clock sampling enter the codec.
 const std = @import("std");
-const history = @import("clipboard_history.zig");
-const policy = @import("clipboard_policy.zig");
+const history = @import("history.zig");
+const policy = @import("../clipboard_policy.zig");
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 pub const header_size = 96;

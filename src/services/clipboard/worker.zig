@@ -2,9 +2,9 @@
 //! Admission/status never perform filesystem I/O. Only one active job and one
 //! pending snapshot exist; required removals apply backpressure rather than queue.
 const std = @import("std");
-const codec = @import("clipboard_history_codec.zig");
-const storage = @import("clipboard_history_store.zig");
-const history = @import("clipboard_history.zig");
+const codec = @import("codec.zig");
+const storage = @import("store.zig");
+const history = @import("history.zig");
 
 pub const Key = [32]u8;
 pub const receipt_limit = 16;

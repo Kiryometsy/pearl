@@ -1,7 +1,7 @@
 //! Independent, single-owner clipboard history. No Wayland, GTK, clocks or I/O.
 //! Callers provide trusted epoch seconds and prune before exposing borrowed views.
 const std = @import("std");
-const policy = @import("clipboard_policy.zig");
+const policy = @import("../clipboard_policy.zig");
 
 pub const Kind = policy.Kind;
 pub const entries_limit = 100;

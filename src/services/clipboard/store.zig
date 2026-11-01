@@ -3,7 +3,7 @@
 //! exclude cooperating writers; they do not isolate hostile same-UID processes.
 const std = @import("std");
 const linux = std.os.linux;
-const codec = @import("clipboard_history_codec.zig");
+const codec = @import("codec.zig");
 const Stat = linux.Statx;
 
 pub const State = enum { unloaded, missing, ready, corrupt, unsupported, unsafe, failed, uncertain };

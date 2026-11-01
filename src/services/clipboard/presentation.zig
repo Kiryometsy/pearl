@@ -1,9 +1,9 @@
 //! Bounded CLI projections and shared, compositor-free clipboard view policy.
 const std = @import("std");
-const history = @import("clipboard_history.zig");
-const policy = @import("clipboard_policy.zig");
-const worker = @import("clipboard_history_worker.zig");
-const frame = @import("../cli/frame.zig");
+const history = @import("history.zig");
+const policy = @import("../clipboard_policy.zig");
+const worker = @import("worker.zig");
+const frame = @import("../../cli/frame.zig");
 pub const capacity = history.entries_limit;
 pub const page_limit = 20;
 pub const Health = enum { paused, loading, enabled, pending, durable, busy, failed, uncertain, unavailable, clock_untrusted };

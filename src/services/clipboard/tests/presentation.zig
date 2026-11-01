@@ -1,9 +1,9 @@
 const std = @import("std");
 const t = std.testing;
-const view = @import("clipboard_history_presentation.zig");
-const history = @import("clipboard_history.zig");
-const worker = @import("clipboard_history_worker.zig");
-const frame = @import("../cli/frame.zig");
+const view = @import("../presentation.zig");
+const history = @import("../history.zig");
+const worker = @import("../worker.zig");
+const frame = @import("../../../cli/frame.zig");
 const instance = "0123456789abcdef0123456789abcdef";
 fn context(model: *const history.History) view.Context {
     return .{ .accessible = true, .persistent = true, .health = .durable, .message = "Ready", .entries = model.entries(), .revision = model.generation, .instance = instance };

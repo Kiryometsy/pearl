@@ -1,7 +1,7 @@
 const std = @import("std");
 const t = std.testing;
-const codec = @import("clipboard_history_codec.zig");
-const history = @import("clipboard_history.zig");
+const codec = @import("../codec.zig");
+const history = @import("../history.zig");
 
 const Buffer = struct {
     bytes: std.ArrayList(u8) = .empty,

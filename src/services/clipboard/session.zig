@@ -1,11 +1,11 @@
 //! Main-context history/storage coordination; no GTK, Wayland or filesystem I/O.
 const std = @import("std");
-pub const history = @import("clipboard_history.zig");
-const codec = @import("clipboard_history_codec.zig");
-pub const clock = @import("clipboard_history_clock.zig");
-pub const worker = @import("clipboard_history_worker.zig");
-const storage = @import("clipboard_history_store.zig");
-pub const presentation = @import("clipboard_history_presentation.zig");
+pub const history = @import("history.zig");
+const codec = @import("codec.zig");
+pub const clock = @import("clock.zig");
+pub const worker = @import("worker.zig");
+const storage = @import("store.zig");
+pub const presentation = @import("presentation.zig");
 pub const Error = history.Error || worker.AdmissionError || storage.Error || clock.Error || error{ Locked, Unavailable, Stale };
 pub const Health = presentation.Health;
 

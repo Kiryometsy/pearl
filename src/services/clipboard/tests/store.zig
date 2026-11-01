@@ -1,7 +1,7 @@
 const std = @import("std");
 const t = std.testing;
-const storage = @import("clipboard_history_store.zig");
-const codec = @import("clipboard_history_codec.zig");
+const storage = @import("../store.zig");
+const codec = @import("../codec.zig");
 extern "c" fn mkdtemp([*:0]u8) ?[*:0]u8;
 
 const first: codec.Snapshot = .{ .records = &.{.{ .bytes = "synthetic first", .last_copy = 10, .sequence = 1 }}, .floor = 20 };

@@ -1,9 +1,9 @@
 const std = @import("std");
 const t = std.testing;
-const module = @import("clipboard_history_worker.zig");
-const codec = @import("clipboard_history_codec.zig");
-const storage = @import("clipboard_history_store.zig");
-const history = @import("clipboard_history.zig");
+const module = @import("../worker.zig");
+const codec = @import("../codec.zig");
+const storage = @import("../store.zig");
+const history = @import("../history.zig");
 const Worker = module.Worker;
 const Owned = module.OwnedSnapshot;
 
