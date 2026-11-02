@@ -21,6 +21,7 @@ pub const AdmissionError = error{ Busy, Closed, NotReady, Fenced, StaleRevision,
 pub const Status = struct {
     restoring: bool = false,
     initialized: bool = false,
+    clear_only: bool = false,
     stopped: bool = false,
     accepting: bool = false,
     desired_revision: u64 = 0,
@@ -227,9 +228,10 @@ pub const Worker = struct {
         self.mutex.lockUncancelable(self.io);
         var locked = true;
         defer if (locked) self.mutex.unlock(self.io);
-        if (self.state.failure != null) return error.Fenced;
+        if (self.state.failure != null and !(self.state.clear_only and operation == .clear)) return error.Fenced;
         if (self.stop_requested or self.state.stopped) return error.Closed;
-        if (!self.state.initialized or self.state.restoring) return error.NotReady;
+        if ((!self.state.initialized and !self.state.clear_only) or self.state.restoring) return error.NotReady;
+        if (self.state.clear_only and self.state.desired_revision != 0) return error.Busy;
         if (revision <= self.state.desired_revision) return error.StaleRevision;
         if (self.pending) |pending| if (pending.operation != .ordinary) return error.Busy;
         var token: ?u64 = null;
@@ -299,14 +301,14 @@ pub const Worker = struct {
     pub fn waitReady(self: *Worker) Status {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        while (!self.state.initialized and !self.state.stopped) self.condition.waitUncancelable(self.io, &self.mutex);
+        while (!self.state.initialized and !self.state.clear_only and !self.state.stopped) self.condition.waitUncancelable(self.io, &self.mutex);
         return self.statusLocked();
     }
 
     pub fn waitIdle(self: *Worker) Status {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        while ((!self.state.initialized and !self.state.stopped) or self.active != null or self.pending != null) self.condition.waitUncancelable(self.io, &self.mutex);
+        while ((!self.state.initialized and !self.state.clear_only and !self.state.stopped) or self.active != null or self.pending != null) self.condition.waitUncancelable(self.io, &self.mutex);
         return self.statusLocked();
     }
 
@@ -356,22 +358,31 @@ pub const Worker = struct {
             if (abandoned) |*loaded| loaded.deinit();
             backend.close(backend.context);
             self.mutex.lockUncancelable(self.io);
+            self.state.clear_only = false;
             self.state.stopped = true;
             self.condition.broadcast(self.io);
             self.mutex.unlock(self.io);
         }
-        var saved_key = backend.load(backend.context) catch |err| {
+        var saved_key = backend.load(backend.context) catch |err| recovery: {
             self.mutex.lockUncancelable(self.io);
             self.state.failure = err;
+            // Only a safely opened file rejected by the codec can await an
+            // explicit Clear. Keep its validated directory/file locks owned by
+            // this thread; all other startup failures still close and exit.
+            self.state.clear_only = self.target == .filesystem and file.store != null and
+                (err == error.Corrupt or err == error.Unsupported) and
+                (file.store.?.state == .corrupt or file.store.?.state == .unsupported);
+            const clear_only = self.state.clear_only;
             self.condition.broadcast(self.io);
             self.mutex.unlock(self.io);
-            return;
+            if (!clear_only) return;
+            break :recovery @as(Key, @splat(0));
         };
         self.mutex.lockUncancelable(self.io);
         self.restored = file.loaded;
         file.loaded = null;
-        self.state.restoring = file.retain_load;
-        self.state.initialized = true;
+        self.state.restoring = file.retain_load and !self.state.clear_only;
+        self.state.initialized = !self.state.clear_only;
         self.condition.broadcast(self.io);
         self.mutex.unlock(self.io);
         while (true) {
@@ -383,6 +394,7 @@ pub const Worker = struct {
             };
             self.pending = null;
             self.active = job;
+            const recovering = self.state.clear_only;
             self.setReceipt(job.token, .running, null);
             self.condition.broadcast(self.io);
             self.mutex.unlock(self.io);
@@ -401,6 +413,7 @@ pub const Worker = struct {
             self.active = null; // main only reads job metadata, never its pointer
             if (write) self.state.write_count +|= 1;
             if (failure) |err| {
+                self.state.clear_only = false;
                 self.state.failure = err;
                 self.setReceipt(job.token, if (err == error.Uncertain) .uncertain else .failed, err);
                 const cancelled = self.pending;
@@ -414,8 +427,12 @@ pub const Worker = struct {
             }
             self.state.durable_revision = job.revision;
             self.setReceipt(job.token, .durable, null);
+            if (recovering) self.state.clear_only = false;
             self.condition.broadcast(self.io);
             self.mutex.unlock(self.io);
+            // Recovery deliberately requires a restart. Do not resume normal
+            // saves/restoration in a session whose startup never completed.
+            if (recovering) return;
         }
     }
 };

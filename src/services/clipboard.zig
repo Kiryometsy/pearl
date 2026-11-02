@@ -252,9 +252,9 @@ pub const Clipboard = struct {
         a.free(bytes);
     }
     pub fn clear(self: *Clipboard) !void {
-        if (self.locked) return error.Locked;
-        if (!self.accessible()) return error.Unavailable;
+        if (self.locked or self.stopping or self.ambiguous) return error.Locked;
         const session = if (self.session) |*value| value else return error.Unavailable;
+        if (!self.accessible() and !session.canRecoverClear()) return error.Unavailable;
         session.clear() catch |err| {
             self.message = self.baseline();
             self.changed(self.context);
@@ -505,9 +505,9 @@ pub const Clipboard = struct {
         return presentation.status(alloc, .{ .accessible = false, .health = .unavailable, .instance = "", .message = self.baseline() }, page);
     }
     pub fn checkInstance(self: *Clipboard, instance: ?[]const u8) !void {
-        if (self.locked or self.stopping) return error.Locked;
-        if (!self.accessible()) return error.Unavailable;
-        try self.session.?.checkInstance(instance);
+        if (self.locked or self.stopping or self.ambiguous) return error.Locked;
+        const session = if (self.session) |*value| value else return error.Unavailable;
+        try session.checkInstance(instance);
     }
     pub fn removalStatus(self: *Clipboard, alloc: std.mem.Allocator) ![]const u8 {
         if (self.locked or self.stopping or self.ambiguous) return error.Locked;

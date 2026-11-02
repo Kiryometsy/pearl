@@ -214,6 +214,34 @@ test "store corrupted history is preserved and cannot be overwritten automatical
     try t.expect((try store.read()) == null);
 }
 
+test "store corrupt Clear refuses changed permissions symlinks and replacement history" {
+    for (0..3) |variant| {
+        var fixture = try Fixture.init();
+        defer fixture.deinit();
+        var store = try fixture.open();
+        defer store.close();
+        const dir = store.directoryFd();
+        try writeLeaf(dir, "history.bin", "synthetic rejected history", 0o600);
+        try writeLeaf(dir, "unrelated", "synthetic unrelated text", 0o600);
+        try t.expectError(error.Corrupt, store.read());
+        if (variant == 0) {
+            try writeLeaf(dir, "history.bin", "synthetic rejected history", 0o644);
+        } else {
+            try t.expectEqual(@as(c_int, 0), std.c.unlinkat(dir, "history.bin", 0));
+            if (variant == 1) {
+                try t.expectEqual(@as(c_int, 0), std.c.symlinkat("unrelated", dir, "history.bin"));
+            } else try writeLeaf(dir, "history.bin", "synthetic replacement history", 0o600);
+        }
+        try t.expectError(if (variant == 2) error.Conflict else error.Unsafe, store.remove());
+        var st: std.os.linux.Statx = undefined;
+        try t.expectEqual(std.posix.E.SUCCESS, std.os.linux.errno(std.os.linux.statx(dir, "history.bin", std.os.linux.AT.SYMLINK_NOFOLLOW, .{ .TYPE = true }, &st)));
+        if (variant == 1) try t.expectEqual(@as(u16, std.c.S.IFLNK), st.mode & std.c.S.IFMT);
+        const bytes = try readLeaf(dir, if (variant == 1) "unrelated" else "history.bin");
+        defer t.allocator.free(bytes);
+        try t.expectEqualStrings(if (variant == 0) "synthetic rejected history" else if (variant == 1) "synthetic unrelated text" else "synthetic replacement history", bytes);
+    }
+}
+
 test "store unsupported saved version is preserved" {
     var fixture = try Fixture.init();
     defer fixture.deinit();

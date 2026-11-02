@@ -117,6 +117,12 @@ by interrupted saves before confirming durability, including when text remains
 in the history file.
 
 Unsafe, corrupt or unsupported files are not overwritten automatically.
+When a safe history file is corrupt or has an unsupported version, an unlocked
+user can explicitly run `pearlctl clipboard clear` and poll its removal receipt.
+Clear revalidates the rejected file under the exclusive writer locks, removes
+validated temporary snapshots and synchronizes the directory. After a `durable`
+receipt, restart Pearl to resume clipboard history. Other storage failures and
+untrusted clock state remain fail-closed; a privacy lock still denies Clear.
 Storage or clock failures currently disable Pearl's history collection and
 selection rather than falling back to memory-only history. Verify that the
 state directory works on Devario. Saved plaintext may remain in backups or

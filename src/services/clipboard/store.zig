@@ -467,6 +467,9 @@ pub const Store = struct {
             defer _ = std.c.close(fd);
             expected = try fdStat(fd);
         }
+        // Recovery may only remove the rejected file we inspected, never a
+        // replacement installed between the failed load and explicit Clear.
+        if (self.state == .corrupt or self.state == .unsupported) try self.checkExpected();
         self.hooks.check(.remove) catch return error.RemoveFailed;
         try self.guard();
         const named = try statAt(self.directoryFd(), "history.bin", linux.AT.SYMLINK_NOFOLLOW);

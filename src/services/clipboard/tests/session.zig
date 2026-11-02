@@ -238,6 +238,8 @@ test "session refuses untrusted saved clock floor and preserves saved bytes" {
     _ = try s.poll(at(699));
     _ = s.worker.?.waitReady();
     try t.expectError(error.ClockUntrusted, s.poll(at(699)));
+    try t.expect(!s.canRecoverClear());
+    try t.expectError(error.ClockUntrusted, s.clear());
     try t.expectEqual(session.Health.clock_untrusted, s.health());
     try t.expectEqual(@as(usize, 0), s.entries().len);
     try t.expectEqual(@as(u64, 0), s.worker.?.status().write_count);
@@ -265,6 +267,8 @@ test "session concurrent writer stays unavailable" {
     try t.expectError(error.Busy, other.poll(at(100)));
     try t.expectEqual(@as(usize, 0), other.entries().len);
     try t.expectError(error.Busy, other.accept(.text, "rejected", at(100)));
+    try t.expect(!other.canRecoverClear());
+    try t.expectError(error.Busy, other.clear());
 }
 
 test "session bounded legacy status includes complete frame overhead and redacts locked history" {
@@ -557,12 +561,147 @@ test "session corrupt unsupported and unsafe saved files remain untouched" {
         };
         try t.expectEqual(expected, status.failure.?);
         try t.expectError(expected, s.poll(at(100)));
+        if (variant == 2) {
+            try t.expect(!s.canRecoverClear());
+            try t.expectError(error.Unsafe, s.clear());
+        } else {
+            try t.expect(s.canRecoverClear());
+            try t.expect(!s.worker.?.status().stopped);
+        }
         try t.expectEqual(session.Health.unavailable, s.health());
         try t.expectEqual(@as(u64, 0), s.worker.?.status().write_count);
         var bytes: [64]u8 = undefined;
         const count = std.c.pread(fd, &bytes, bytes.len, 0);
         try t.expectEqual(@as(isize, @intCast(original.len)), count);
         try t.expectEqualStrings(original, bytes[0..@intCast(count)]);
+    }
+}
+
+const recovery_orphan = "history.tmp.0123456789abcdef0123456789abcdef";
+fn writeSynthetic(dir: c_int, name: [:0]const u8, text: []const u8) !void {
+    const fd = std.c.openat(dir, name, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true, .CLOEXEC = true }, @as(c_uint, 0o600));
+    try t.expect(fd >= 0);
+    defer _ = std.c.close(fd);
+    try t.expectEqual(@as(c_int, 0), std.c.fchmod(fd, 0o600));
+    try t.expectEqual(@as(isize, @intCast(text.len)), std.c.write(fd, text.ptr, text.len));
+}
+fn rejectedSession(fixture: *Fixture, unsupported: bool, hooks: store.Hooks) !session.Session {
+    {
+        var disk = try store.Store.open(t.allocator, fixture.path);
+        defer disk.close();
+        try writeSynthetic(disk.directoryFd(), "history.bin", if (unsupported) "PEARLCH\x00\x02\x00" else "synthetic corrupt history");
+        try writeSynthetic(disk.directoryFd(), recovery_orphan, "synthetic orphan plaintext");
+        try writeSynthetic(disk.directoryFd(), "unrelated", "synthetic unrelated text");
+    }
+    var s = try session.Session.init(t.allocator, t.io, fixture.path, hooks);
+    errdefer close(&s);
+    s.setLocked(false);
+    _ = try s.poll(at(100));
+    const status = s.worker.?.waitReady();
+    try t.expectEqual(if (unsupported) error.Unsupported else error.Corrupt, status.failure.?);
+    try t.expectError(if (unsupported) error.Unsupported else error.Corrupt, s.poll(at(100)));
+    return s;
+}
+
+test "session explicit corrupt and unsupported Clear retains locks until durable recovery then requires restart" {
+    for ([_]bool{ false, true }) |unsupported| {
+        var fixture = try Fixture.init();
+        defer fixture.deinit();
+        var s = try rejectedSession(&fixture, unsupported, .{});
+        defer close(&s);
+        const status = s.worker.?.status();
+        try t.expect(status.clear_only and !status.initialized and !status.stopped and !status.accepting);
+        try t.expectEqual(@as(u64, 0), status.write_count);
+        try t.expectError(error.Busy, store.Store.open(t.allocator, fixture.path));
+        const ordinary = try session.worker.OwnedSnapshot.create(t.allocator, .{ .records = &.{.{ .bytes = "must not save", .last_copy = 100, .sequence = 1 }}, .floor = 100 });
+        defer ordinary.deinit();
+        try t.expectError(error.Fenced, s.worker.?.requestSave(1, ordinary));
+        try t.expectError(error.Fenced, s.worker.?.requestRemoval(.delete, 1, ordinary));
+        // Lock and suspension both close this same session privacy gate.
+        s.setLocked(true);
+        try t.expect(!s.canRecoverClear());
+        try t.expectError(error.Locked, s.clear());
+        try t.expectEqual(@as(u64, 0), s.worker.?.status().write_count);
+        s.setLocked(false);
+        try s.clear();
+        _ = s.worker.?.waitIdle();
+        s.worker.?.join();
+        const receipt = try s.removal();
+        try t.expectEqual(session.worker.ReceiptState.durable, receipt.state);
+        try t.expectEqual(@as(?store.Error, null), receipt.failure);
+        try t.expect(s.worker.?.status().stopped and !s.canRecoverClear() and !s.accessible());
+        const response = try s.removalStatus(t.allocator);
+        defer t.allocator.free(response);
+        const parsed = try std.json.parseFromSlice(std.json.Value, t.allocator, response, .{});
+        defer parsed.deinit();
+        try t.expect(parsed.value.object.get("durable").?.bool);
+        const queried = try s.pageStatus(t.allocator, false, false, "Restart Pearl", .{ .operation = receipt.token, .instance = &s.instance });
+        defer t.allocator.free(queried);
+        const page = try std.json.parseFromSlice(std.json.Value, t.allocator, queried, .{});
+        defer page.deinit();
+        try t.expectEqualStrings("durable", page.value.object.get("removal").?.object.get("state").?.string);
+        try t.expectEqual(@as(usize, 0), page.value.object.get("entries").?.array.items.len);
+        {
+            var disk = try store.Store.open(t.allocator, fixture.path);
+            defer disk.close();
+            try t.expect((try disk.read()) == null);
+            var st: std.os.linux.Statx = undefined;
+            try t.expectEqual(std.posix.E.NOENT, std.os.linux.errno(std.os.linux.statx(disk.directoryFd(), recovery_orphan, 0, .{ .TYPE = true }, &st)));
+            try t.expectEqual(std.posix.E.SUCCESS, std.os.linux.errno(std.os.linux.statx(disk.directoryFd(), "unrelated", 0, .{ .TYPE = true }, &st)));
+        }
+        var reopened = try fixture.start(at(200));
+        defer close(&reopened);
+        try t.expect(reopened.accessible());
+        try t.expectEqual(@as(usize, 0), reopened.entries().len);
+    }
+}
+
+test "session corrupt recovery failures and uncertainty keep truthful queryable receipts" {
+    for ([_]store.Phase{ .remove, .directory_sync }) |phase| {
+        var fixture = try Fixture.init();
+        defer fixture.deinit();
+        var hook: Hook = .{ .fail = phase };
+        var s = try rejectedSession(&fixture, false, hook.hooks());
+        defer close(&s);
+        try s.clear();
+        _ = s.worker.?.waitIdle();
+        s.worker.?.join();
+        const receipt = try s.removal();
+        try t.expectEqual(if (phase == .remove) session.worker.ReceiptState.failed else .uncertain, receipt.state);
+        try t.expectEqual(if (phase == .remove) error.RemoveFailed else error.Uncertain, receipt.failure.?);
+        try t.expectEqual(@as(u64, 0), s.worker.?.status().durable_revision);
+        try t.expect(!s.canRecoverClear());
+        try t.expect(hook.thread.? != std.Thread.getCurrentId());
+        const queried = try s.pageStatus(t.allocator, false, false, "Recovery failed", .{ .operation = receipt.token, .instance = &s.instance });
+        defer t.allocator.free(queried);
+        const page = try std.json.parseFromSlice(std.json.Value, t.allocator, queried, .{});
+        defer page.deinit();
+        try t.expectEqualStrings(@tagName(receipt.state), page.value.object.get("removal").?.object.get("state").?.string);
+        const response = try s.removalStatus(t.allocator);
+        defer t.allocator.free(response);
+        const parsed = try std.json.parseFromSlice(std.json.Value, t.allocator, response, .{});
+        defer parsed.deinit();
+        try t.expect(!parsed.value.object.get("durable").?.bool);
+        var disk = try store.Store.open(t.allocator, fixture.path);
+        defer disk.close();
+        if (phase == .remove) try t.expectError(error.Corrupt, disk.read()) else try t.expect((try disk.read()) == null);
+    }
+}
+
+test "session corrupt recovery remains closed after clock failure or shutdown" {
+    for ([_]bool{ false, true }) |clock_failure| {
+        var fixture = try Fixture.init();
+        defer fixture.deinit();
+        var s = try rejectedSession(&fixture, false, .{});
+        defer close(&s);
+        if (clock_failure) s.failClock() else s.beginShutdown();
+        try t.expect(!s.canRecoverClear());
+        try t.expectError(if (clock_failure) error.ClockUntrusted else error.Locked, s.clear());
+        s.worker.?.join();
+        try t.expectEqual(@as(u64, 0), s.worker.?.status().write_count);
+        var disk = try store.Store.open(t.allocator, fixture.path);
+        defer disk.close();
+        try t.expectError(error.Corrupt, disk.read());
     }
 }
 

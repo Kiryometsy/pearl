@@ -84,7 +84,9 @@ pub const Session = struct {
     pub fn poll(self: *Session, sample: clock.Sample) Error!bool {
         return self.pollImpl(sample) catch |err| {
             self.failure = err;
-            if (self.worker) |w| w.beginShutdown();
+            if (self.worker) |w| {
+                if (!w.status().clear_only or (err != error.Corrupt and err != error.Unsupported)) w.beginShutdown();
+            }
             return err;
         };
     }
@@ -252,8 +254,22 @@ pub const Session = struct {
         defer tx.discard();
         try self.commit(&tx);
     }
+    pub fn canRecoverClear(self: *const Session) bool {
+        if (self.locked or self.stopping or self.ready) return false;
+        if (self.failure) |err| if (err != error.Corrupt and err != error.Unsupported) return false;
+        const status = (self.worker orelse return false).status();
+        return status.clear_only and !status.stopped;
+    }
     pub fn clear(self: *Session) Error!void {
         if (self.locked or self.stopping) return error.Locked;
+        if (self.canRecoverClear()) {
+            const revision = std.math.add(u64, self.save_revision, 1) catch return error.CounterExhausted;
+            const snapshot = try worker.OwnedSnapshot.create(self.allocator, .{ .records = &.{}, .floor = 0 });
+            errdefer snapshot.deinit();
+            self.last_token = try self.worker.?.requestRemoval(.clear, revision, snapshot);
+            self.save_revision = revision;
+            return;
+        }
         if (self.failure) |err| return err;
         if (!self.accessible()) return error.Unavailable;
         var tx = try self.transaction(try self.model.prepareClear(), .clear, true);
