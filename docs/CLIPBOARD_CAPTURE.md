@@ -288,17 +288,55 @@ leave a PNG ready. Hardware HDR, isolated scene pixel/color correctness after an
 upstream metadata fix, very large displays and real screen-reader interaction
 remain unaccepted. No host clipboard, output, PAM or portal service is mutated.
 
-### Devario persistence acceptance
+### Devario persistence acceptance (2026-11-02)
 
-Unit tests and production builds do not establish Devario runtime acceptance.
-Use a disposable Devario user/installation with the modified Pearl build and a
-rollback path; the ordinary upstream package does not contain this feature.
+**Passed for the cases below on an installed Devario/Aqueous desktop**, using
+the private `feat/clipboard-persistence` branch at
+`ce340952ffa5f3fe23326e67b1cd8274d1206eaa`. The production Zig
+0.17.0 build and `zig build test -Doptimize=safe -j2` succeeded with
+GTK 4.24.1 and gtk4-layer-shell 1.3.0.
 
-Check normal copy/paste and history navigation. Copy text, wait for durability,
-restart Pearl and confirm the text returns to history without becoming the
-active clipboard selection. Confirm a PNG works in memory but does not return
-after restart. Lock with retained entries: UI and CLI history must be hidden,
-nothing new is collected, and unlock must not republish old text. Verify
-durable Delete and Clear survive a second restart. Check recopy, seven-day
-expiry and resource limits with synthetic test inputs, without changing the
-host clock. The new persistence behavior has not yet been qualified on Devario.
+The development `zig-out/bin/pearl` ran as the real
+`aqueous-pearl.service` through a temporary runtime-only systemd drop-in,
+preserving Devario's `/usr/bin/aqueous-activity-launch` wrapper.
+`XDG_STATE_HOME=$HOME/.local/state/pearl-persistence-test` isolated the
+test data from the ordinary desktop state. The effective development
+executable, state environment, `0600` history file and `0700` clipboard
+directory were verified before testing.
+
+| Installed-session check | Observed result |
+| --- | --- |
+| Text capture and durability | Text saved with healthy `durable` state; marker present after a Pearl restart |
+| Single-entry Delete | Receipt reached `durable`; deleted marker absent after restart |
+| Clear | Receipt reached `durable`; zero entries immediately and after restart |
+| PNG volatility | One PNG recorded in memory; zero PNGs restored after restart |
+| Lock privacy | Real Aqueous lock acquired; CLI hid history entries, counts and identifiers; saved text remained available after unlock |
+| Copy during lock | Compositor accepted synthetic text while locked; the marker was absent when all 16 visible history records were checked after unlock |
+| Unlock clipboard ownership | A Pearl-owned synthetic selection was verified before locking and was not republished on unlock |
+| Capacity and duplicate recopy | 105 unique copies retained the newest 100 and evicted the oldest five; duplicate recopy promoted its original ID without increasing the count |
+| Per-entry text bound | 262,144-byte text accepted; 262,145-byte selection rejected without changing history; subsequent collection and durability remained healthy |
+| Aggregate payload bound | 64 distinct 262,144-byte entries exactly filled 16,777,216 bytes; the 65th evicted the oldest; all 64 retained entries and bytes survived restart |
+
+A first aggregate stress-test attempt timed out in the Python harness because
+it captured `wl-copy` stderr across the clipboard owner's background lifetime.
+Redirecting stderr to `DEVNULL` resolved the harness issue; the corrected
+aggregate test passed. A separate unlock-detection script exceeded its
+60-second observation window, but subsequent checks confirmed the compositor
+unlocked, clipboard access resumed, and the lock-time copy was absent; an
+independent no-republish lock/unlock run also passed.
+
+**Expiry scope:** The successful Zig test suite includes deterministic
+seven-day expiry, recopy lifetime refresh, restoration/pruning and
+clock-untrusted cases with injected timestamps. A real seven-day elapsed-time
+run on the Devario desktop was **not** performed, and the host clock was not
+modified. This acceptance records the listed manual integration cases, not a
+claim of exhaustive hardware, failure-injection or long-duration qualification.
+
+**Cleanup and rollback verified:** After testing, the isolated history was
+explicitly Cleared with a `durable` receipt and zero entries. The temporary
+systemd drop-in was removed, the user daemon reloaded and
+`aqueous-pearl.service` restarted successfully. The final process executable
+was `/usr/bin/pearl`, the effective launch command was
+`/usr/bin/aqueous-activity-launch /usr/bin/pearl`, and `DropInPaths` was
+empty. The installed Pearl package was not replaced. The development checkout
+remains available separately for further work.
